@@ -1,0 +1,442 @@
+// NexoFlow — modelo de datos (Prisma ORM 7 + PostgreSQL).
+//
+// Reglas generales:
+// - Importes: NUMERIC(14,2), siempre positivos salvo el saldo inicial de una cuenta.
+//   El signo lo da el tipo de movimiento (ver docs/calculos-financieros.md).
+// - Fechas contables: DATE (sin hora). Marcas de tiempo: TIMESTAMPTZ.
+// - Todo dato financiero pertenece a un espacio (workspace). Los disparadores de
+//   la migración inicial impiden mezclar datos de espacios distintos.
+// - Las restricciones CHECK y los disparadores están en
+//   prisma/migrations/20261016090000_init/migration.sql (Prisma no los representa).
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ───────────────────────────── Enumeraciones ─────────────────────────────
+
+enum WorkspaceType {
+  PERSONAL
+  BUSINESS
+
+  @@map("workspace_type")
+}
+
+enum WorkspaceRole {
+  OWNER
+  ADMIN
+  MEMBER
+  VIEWER
+
+  @@map("workspace_role")
+}
+
+enum AccountType {
+  CHECKING
+  SAVINGS
+  CASH
+  OTHER
+
+  @@map("account_type")
+}
+
+enum CategoryKind {
+  INCOME
+  EXPENSE
+
+  @@map("category_kind")
+}
+
+enum TransactionType {
+  INCOME
+  EXPENSE
+  TRANSFER
+
+  @@map("transaction_type")
+}
+
+enum TransferLeg {
+  OUT
+  IN
+
+  @@map("transfer_leg")
+}
+
+enum GoalPriority {
+  LOW
+  MEDIUM
+  HIGH
+
+  @@map("goal_priority")
+}
+
+enum GoalStatus {
+  ACTIVE
+  PAUSED
+  COMPLETED
+  CANCELLED
+
+  @@map("goal_status")
+}
+
+enum GoalMovementKind {
+  CONTRIBUTION
+  WITHDRAWAL
+
+  @@map("goal_movement_kind")
+}
+
+enum ScheduleFrequency {
+  ONCE
+  WEEKLY
+  MONTHLY
+  QUARTERLY
+  YEARLY
+
+  @@map("schedule_frequency")
+}
+
+enum ImportBatchStatus {
+  COMPLETED
+  UNDONE
+
+  @@map("import_batch_status")
+}
+
+enum ImportRowStatus {
+  ACCEPTED
+  REJECTED
+  SKIPPED_DUPLICATE
+
+  @@map("import_row_status")
+}
+
+// ───────────────────────────── Usuarios y acceso ─────────────────────────────
+
+model User {
+  id           String   @id @default(uuid()) @db.Uuid
+  email        String   @unique @db.VarChar(254)
+  name         String   @db.VarChar(100)
+  passwordHash String   @map("password_hash") @db.VarChar(255)
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt    DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  sessions      Session[]
+  resetTokens   PasswordResetToken[]
+  memberships   WorkspaceMember[]
+  preference    UserPreference?
+  importBatches ImportBatch[]
+
+  @@map("users")
+}
+
+model Session {
+  id         String   @id @default(uuid()) @db.Uuid
+  userId     String   @map("user_id") @db.Uuid
+  tokenHash  String   @unique @map("token_hash") @db.Char(64)
+  expiresAt  DateTime @map("expires_at") @db.Timestamptz(3)
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  lastUsedAt DateTime @default(now()) @map("last_used_at") @db.Timestamptz(3)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
+  @@map("sessions")
+}
+
+model PasswordResetToken {
+  id        String    @id @default(uuid()) @db.Uuid
+  userId    String    @map("user_id") @db.Uuid
+  tokenHash String    @unique @map("token_hash") @db.Char(64)
+  expiresAt DateTime  @map("expires_at") @db.Timestamptz(3)
+  usedAt    DateTime? @map("used_at") @db.Timestamptz(3)
+  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("password_reset_tokens")
+}
+
+model UserPreference {
+  userId               String   @id @map("user_id") @db.Uuid
+  timezone             String   @default("Europe/Madrid") @db.VarChar(64)
+  minimumReserve       Decimal  @default(0) @map("minimum_reserve") @db.Decimal(14, 2)
+  budgetAlertThreshold Int      @default(80) @map("budget_alert_threshold") @db.SmallInt
+  updatedAt            DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("user_preferences")
+}
+
+// ───────────────────────────── Espacios ─────────────────────────────
+
+model Workspace {
+  id        String        @id @default(uuid()) @db.Uuid
+  name      String        @db.VarChar(100)
+  type      WorkspaceType @default(PERSONAL)
+  currency  String        @default("EUR") @db.Char(3)
+  createdAt DateTime      @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt DateTime      @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  members        WorkspaceMember[]
+  accounts       Account[]
+  categories     Category[]
+  transactions   Transaction[]
+  transfers      Transfer[]
+  budgets        Budget[]
+  savingsGoals   SavingsGoal[]
+  goalMovements  GoalMovement[]
+  scheduledItems ScheduledItem[]
+  importBatches  ImportBatch[]
+
+  @@map("workspaces")
+}
+
+model WorkspaceMember {
+  id          String        @id @default(uuid()) @db.Uuid
+  workspaceId String        @map("workspace_id") @db.Uuid
+  userId      String        @map("user_id") @db.Uuid
+  role        WorkspaceRole @default(OWNER)
+  createdAt   DateTime      @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([workspaceId, userId])
+  @@index([userId])
+  @@map("workspace_members")
+}
+
+// ───────────────────────────── Finanzas ─────────────────────────────
+
+model Account {
+  id             String      @id @default(uuid()) @db.Uuid
+  workspaceId    String      @map("workspace_id") @db.Uuid
+  name           String      @db.VarChar(80)
+  type           AccountType @default(CHECKING)
+  currency       String      @default("EUR") @db.Char(3)
+  initialBalance Decimal     @default(0) @map("initial_balance") @db.Decimal(14, 2)
+  openedOn       DateTime    @map("opened_on") @db.Date
+  archivedAt     DateTime?   @map("archived_at") @db.Timestamptz(3)
+  createdAt      DateTime    @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt      DateTime    @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  workspace      Workspace       @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  transactions   Transaction[]
+  transfersOut   Transfer[]      @relation("TransferFrom")
+  transfersIn    Transfer[]      @relation("TransferTo")
+  scheduledItems ScheduledItem[]
+  importBatches  ImportBatch[]
+  savingsGoals   SavingsGoal[]
+
+  @@index([workspaceId, archivedAt])
+  @@map("accounts")
+}
+
+model Category {
+  id          String       @id @default(uuid()) @db.Uuid
+  workspaceId String       @map("workspace_id") @db.Uuid
+  name        String       @db.VarChar(60)
+  kind        CategoryKind
+  color       String       @default("#64748b") @db.VarChar(7)
+  archivedAt  DateTime?    @map("archived_at") @db.Timestamptz(3)
+  createdAt   DateTime     @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt   DateTime     @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  workspace      Workspace       @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  transactions   Transaction[]
+  budgets        Budget[]
+  scheduledItems ScheduledItem[]
+
+  @@unique([workspaceId, kind, name])
+  @@map("categories")
+}
+
+// Una transferencia agrupa exactamente dos movimientos de tipo TRANSFER
+// (una salida y una entrada del mismo importe). Un disparador diferido lo
+// comprueba al confirmar cada transacción de base de datos.
+model Transfer {
+  id            String   @id @default(uuid()) @db.Uuid
+  workspaceId   String   @map("workspace_id") @db.Uuid
+  fromAccountId String   @map("from_account_id") @db.Uuid
+  toAccountId   String   @map("to_account_id") @db.Uuid
+  amount        Decimal  @db.Decimal(14, 2)
+  date          DateTime @db.Date
+  description   String   @default("") @db.VarChar(200)
+  createdAt     DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt     DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  workspace   Workspace     @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  fromAccount Account       @relation("TransferFrom", fields: [fromAccountId], references: [id], onDelete: NoAction)
+  toAccount   Account       @relation("TransferTo", fields: [toAccountId], references: [id], onDelete: NoAction)
+  legs        Transaction[]
+
+  @@index([workspaceId, date])
+  @@index([fromAccountId])
+  @@index([toAccountId])
+  @@map("transfers")
+}
+
+model Transaction {
+  id              String          @id @default(uuid()) @db.Uuid
+  workspaceId     String          @map("workspace_id") @db.Uuid
+  accountId       String          @map("account_id") @db.Uuid
+  categoryId      String?         @map("category_id") @db.Uuid
+  type            TransactionType
+  transferId      String?         @map("transfer_id") @db.Uuid
+  transferLeg     TransferLeg?    @map("transfer_leg")
+  amount          Decimal         @db.Decimal(14, 2)
+  date            DateTime        @db.Date
+  description     String          @default("") @db.VarChar(200)
+  importBatchId   String?         @map("import_batch_id") @db.Uuid
+  scheduledItemId String?         @map("scheduled_item_id") @db.Uuid
+  createdAt       DateTime        @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt       DateTime        @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  workspace     Workspace      @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  account       Account        @relation(fields: [accountId], references: [id], onDelete: NoAction)
+  category      Category?      @relation(fields: [categoryId], references: [id], onDelete: NoAction)
+  transfer      Transfer?      @relation(fields: [transferId], references: [id], onDelete: Cascade)
+  importBatch   ImportBatch?   @relation(fields: [importBatchId], references: [id], onDelete: SetNull)
+  scheduledItem ScheduledItem? @relation(fields: [scheduledItemId], references: [id], onDelete: SetNull)
+  importRows    ImportRow[]
+
+  @@index([workspaceId, date])
+  @@index([workspaceId, type, date])
+  @@index([accountId, date])
+  @@index([categoryId, date])
+  @@index([transferId])
+  @@index([importBatchId])
+  @@map("transactions")
+}
+
+model Budget {
+  id          String   @id @default(uuid()) @db.Uuid
+  workspaceId String   @map("workspace_id") @db.Uuid
+  categoryId  String   @map("category_id") @db.Uuid
+  // Primer día del mes al que se aplica.
+  month       DateTime @db.Date
+  limitAmount Decimal  @map("limit_amount") @db.Decimal(14, 2)
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt   DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  category  Category  @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+
+  @@unique([workspaceId, categoryId, month])
+  @@index([workspaceId, month])
+  @@map("budgets")
+}
+
+// Un objetivo es una meta informativa: NO es dinero adicional ni modifica saldos.
+model SavingsGoal {
+  id              String       @id @default(uuid()) @db.Uuid
+  workspaceId     String       @map("workspace_id") @db.Uuid
+  name            String       @db.VarChar(80)
+  targetAmount    Decimal      @map("target_amount") @db.Decimal(14, 2)
+  initialAmount   Decimal      @default(0) @map("initial_amount") @db.Decimal(14, 2)
+  targetDate      DateTime?    @map("target_date") @db.Date
+  priority        GoalPriority @default(MEDIUM)
+  status          GoalStatus   @default(ACTIVE)
+  linkedAccountId String?      @map("linked_account_id") @db.Uuid
+  createdAt       DateTime     @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt       DateTime     @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  workspace     Workspace      @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  linkedAccount Account?       @relation(fields: [linkedAccountId], references: [id], onDelete: SetNull)
+  movements     GoalMovement[]
+
+  @@index([workspaceId, status])
+  @@map("savings_goals")
+}
+
+model GoalMovement {
+  id          String           @id @default(uuid()) @db.Uuid
+  workspaceId String           @map("workspace_id") @db.Uuid
+  goalId      String           @map("goal_id") @db.Uuid
+  kind        GoalMovementKind
+  amount      Decimal          @db.Decimal(14, 2)
+  date        DateTime         @db.Date
+  note        String           @default("") @db.VarChar(200)
+  createdAt   DateTime         @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  workspace Workspace   @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  goal      SavingsGoal @relation(fields: [goalId], references: [id], onDelete: Cascade)
+
+  @@index([goalId, date])
+  @@index([workspaceId])
+  @@map("goal_movements")
+}
+
+// Compromiso previsto (no es un movimiento real).
+model ScheduledItem {
+  id          String            @id @default(uuid()) @db.Uuid
+  workspaceId String            @map("workspace_id") @db.Uuid
+  accountId   String?           @map("account_id") @db.Uuid
+  categoryId  String?           @map("category_id") @db.Uuid
+  type        CategoryKind
+  amount      Decimal           @db.Decimal(14, 2)
+  description String            @db.VarChar(200)
+  frequency   ScheduleFrequency @default(MONTHLY)
+  startDate   DateTime          @map("start_date") @db.Date
+  endDate     DateTime?         @map("end_date") @db.Date
+  active      Boolean           @default(true)
+  createdAt   DateTime          @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt   DateTime          @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  workspace    Workspace     @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  account      Account?      @relation(fields: [accountId], references: [id], onDelete: SetNull)
+  category     Category?     @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+  transactions Transaction[]
+
+  @@index([workspaceId, active, startDate])
+  @@map("scheduled_items")
+}
+
+model ImportBatch {
+  id              String            @id @default(uuid()) @db.Uuid
+  workspaceId     String            @map("workspace_id") @db.Uuid
+  accountId       String            @map("account_id") @db.Uuid
+  createdByUserId String?           @map("created_by_user_id") @db.Uuid
+  fileName        String            @map("file_name") @db.VarChar(255)
+  status          ImportBatchStatus @default(COMPLETED)
+  totalRows       Int               @default(0) @map("total_rows")
+  acceptedRows    Int               @default(0) @map("accepted_rows")
+  rejectedRows    Int               @default(0) @map("rejected_rows")
+  skippedRows     Int               @default(0) @map("skipped_rows")
+  createdAt       DateTime          @default(now()) @map("created_at") @db.Timestamptz(3)
+  undoneAt        DateTime?         @map("undone_at") @db.Timestamptz(3)
+
+  workspace    Workspace     @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  account      Account       @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  createdBy    User?         @relation(fields: [createdByUserId], references: [id], onDelete: SetNull)
+  rows         ImportRow[]
+  transactions Transaction[]
+
+  @@index([workspaceId, createdAt])
+  @@map("import_batches")
+}
+
+model ImportRow {
+  id            String          @id @default(uuid()) @db.Uuid
+  batchId       String          @map("batch_id") @db.Uuid
+  rowNumber     Int             @map("row_number")
+  status        ImportRowStatus
+  raw           Json
+  error         String?         @db.VarChar(500)
+  transactionId String?         @map("transaction_id") @db.Uuid
+
+  batch       ImportBatch  @relation(fields: [batchId], references: [id], onDelete: Cascade)
+  transaction Transaction? @relation(fields: [transactionId], references: [id], onDelete: SetNull)
+
+  @@unique([batchId, rowNumber])
+  @@map("import_rows")
+}

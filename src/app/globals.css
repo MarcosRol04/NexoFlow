@@ -1,0 +1,57 @@
+@import "tailwindcss";
+
+/* Tokens de diseño de NexoFlow. Colores semánticos:
+   - brand: identidad (índigo)
+   - positive: ingresos y resultados positivos (verde)
+   - negative: gastos y alertas relevantes (rojo)
+   - estimate: estimaciones y previsiones (ámbar) */
+@theme {
+  --font-sans: "Inter", "Segoe UI", system-ui, -apple-system, "Helvetica Neue", Arial, sans-serif;
+  --font-mono: "Cascadia Mono", "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+
+  --color-brand-50: #eef2ff;
+  --color-brand-100: #e0e7ff;
+  --color-brand-500: #6366f1;
+  --color-brand-600: #4f46e5;
+  --color-brand-700: #4338ca;
+  --color-brand-900: #1e1b4b;
+
+  --color-positive-50: #ecfdf5;
+  --color-positive-600: #059669;
+  --color-positive-700: #047857;
+
+  --color-negative-50: #fff1f2;
+  --color-negative-600: #e11d48;
+  --color-negative-700: #be123c;
+
+  --color-estimate-50: #fffbeb;
+  --color-estimate-600: #d97706;
+  --color-estimate-700: #b45309;
+}
+
+@layer base {
+  html {
+    -webkit-text-size-adjust: 100%;
+  }
+  body {
+  @apply text-slate-900 antialiased;
+  background-color: #D9EEDC;
+  }
+  /* Cifras alineadas en tablas y tarjetas. */
+  .tabular {
+    font-variant-numeric: tabular-nums;
+  }
+  :focus-visible {
+    outline: 2px solid var(--color-brand-500);
+    outline-offset: 2px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}
